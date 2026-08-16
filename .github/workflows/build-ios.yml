@@ -1,49 +1,39 @@
-name: Build iOS IPA
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-jobs:
-  build-ios:
-    runs-on: macos-14
-
-    steps:
-    - name: Checkout Repository
-      uses: actions/checkout@v4
-
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
-
-    - name: Install Dependencies
-      run: npm install
-
-    - name: Setup iOS Project via Capacitor
-      run: |
-        npx cap add ios
-        npx cap sync ios
-
-    - name: Set up Ruby
-      uses: ruby/setup-ruby@v1
-      with:
-        ruby-version: '3.0'
-
     - name: Build IPA (Ad-Hoc / No Code Sign)
       run: |
         cd ios/App
-        # Building without signing is tricky, but we can generate an unsigned .app and payload it to .ipa
-        xcodebuild -workspace App.xcworkspace -scheme App -configuration Release CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO build
         
-        # Package into IPA
+        # Build for iOS device (iphoneos)
+        xcodebuild -workspace App.xcworkspace \
+          -scheme App \
+          -configuration Release \
+          -derivedDataPath build \
+          -arch arm64 \
+          CODE_SIGN_IDENTITY="" \
+          CODE_SIGNING_REQUIRED=NO \
+          CODE_SIGNING_ALLOWED=NO \
+          build
+        
+        # Find the actual .app location
+        APP_PATH=$(find build -name "App.app" -type d | head -1)
+        
+        if [ -z "$APP_PATH" ]; then
+          echo "Error: App.app not found"
+          find build -name "*.app" -type d
+          exit 1
+        fi
+        
+        echo "Found app at: $APP_PATH"
+        
+        # Create IPA structure
         mkdir -p Payload
-        cp -r build/Release-iphoneos/App.app Payload/
+        cp -r "$APP_PATH" Payload/App.app
         zip -r MusicPlayer.ipa Payload
-
-    - name: Upload IPA Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: MusicPlayer-iOS-Unsigned
-        path: ios/App/MusicPlayer.ipa
+        
+        # Verify
+        if [ -f "MusicPlayer.ipa" ]; then
+          echo "✓ IPA created successfully"
+          ls -lh MusicPlayer.ipa
+        else
+          echo "Error: IPA not created"
+          exit 1
+        fi
