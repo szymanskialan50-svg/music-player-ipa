@@ -1003,8 +1003,23 @@ if(localStorage.getItem(SETUP_KEY)){
 const ic=document.createElement('canvas');ic.width=180;ic.height=180;drawIcon(ic.getContext('2d'),180,true);
 const du=ic.toDataURL('image/png');
 ['apple-touch-icon','icon'].forEach(r=>{const l=document.createElement('link');l.rel=r;l.href=du;document.head.appendChild(l);});
-const hc=document.getElementById('logoCanvas').getContext('2d');hc.scale(window.devicePixelRatio||1,window.devicePixelRatio||1);drawIcon(hc,28,false);
-if(!localStorage.getItem(SETUP_KEY)){const sc=document.getElementById('setupCanvas').getContext('2d');sc.scale(window.devicePixelRatio||1,window.devicePixelRatio||1);drawIcon(sc,160,true);}
+// Fix: canvases were double-scaled for Retina (fixed backing-store size PLUS a runtime
+// devicePixelRatio scale on top), so only a small clipped corner of the icon was visible
+// on real iPhones (2x/3x screens). We now size the backing store to match the actual
+// CSS display size * devicePixelRatio, then draw using the CSS size as the coordinate space.
+function drawIconCrisp(canvas,cssSize,bg){
+  const dpr=window.devicePixelRatio||1;
+  canvas.width=Math.round(cssSize*dpr);
+  canvas.height=Math.round(cssSize*dpr);
+  canvas.style.width=cssSize+'px';
+  canvas.style.height=cssSize+'px';
+  const ctx=canvas.getContext('2d');
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  drawIcon(ctx,cssSize,bg);
+}
+drawIconCrisp(document.getElementById('logoCanvas'),28,false);
+if(!localStorage.getItem(SETUP_KEY)){drawIconCrisp(document.getElementById('setupCanvas'),78,true);}
+
 </script>
 </body>
 </html>
