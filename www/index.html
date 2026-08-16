@@ -642,24 +642,49 @@ function savePl(){lsSet('mp_playlists',JSON.stringify(state.playlists));}
 
 /* ===== iOS BACKGROUND AUDIO ===== */
 function initBgAudio(){
-  if(!('mediaSession' in navigator))return;
+  if('mediaSession' in navigator){
+    try{
+      const ms=navigator.mediaSession;
+      ms.setActionHandler('play',()=>{setupAudio();audioEl.play().catch(()=>{});});
+      ms.setActionHandler('pause',()=>audioEl.pause());
+      ms.setActionHandler('previoustrack',prevT);
+      ms.setActionHandler('nexttrack',nextT);
+      ms.setActionHandler('stop',()=>{audioEl.pause();audioEl.currentTime=0;});
+      ms.setActionHandler('seekto',d=>{if(d.seekTime!=null)audioEl.currentTime=d.seekTime;});
+      ms.setActionHandler('seekforward',d=>{audioEl.currentTime=Math.min(audioEl.duration||0,audioEl.currentTime+(d.seekOffset||10));});
+      ms.setActionHandler('seekbackward',d=>{audioEl.currentTime=Math.max(0,audioEl.currentTime-(d.seekOffset||10));});
+    }catch(e){}
+  }
+  // iOS/WKWebView regularly suspends the Web Audio graph (used here for the equalizer)
+  // as soon as the app is backgrounded or the screen locks. Since the <audio> element's
+  // sound is routed *through* that graph, a suspended context = silent audio even though
+  // playback "continues". We keep nudging it (and the <audio> element) back to life instead
+  // of only reacting once the user returns to the app.
+  const nudge=()=>{
+    if(!state.isPlaying)return;
+    if(audioCtx&&audioCtx.state!=='running')audioCtx.resume().catch(()=>{});
+    if(audioEl.paused&&audioEl.src)audioEl.play().catch(()=>{});
+  };
+  setInterval(nudge,1000);
+  document.addEventListener('visibilitychange',nudge);
+  window.addEventListener('pageshow',nudge);
+  window.addEventListener('focus',nudge);
+}
+let msArtwork=null;
+function getMSArtwork(){
+  if(msArtwork)return msArtwork;
   try{
-    const ms=navigator.mediaSession;
-    ms.setActionHandler('play',togglePP);
-    ms.setActionHandler('pause',togglePP);
-    ms.setActionHandler('previoustrack',prevT);
-    ms.setActionHandler('nexttrack',nextT);
-    ms.setActionHandler('seekto',d=>{if(d.seekTime!=null)audioEl.currentTime=d.seekTime;});
-    ms.setActionHandler('seekforward',d=>{audioEl.currentTime=Math.min(audioEl.duration||0,audioEl.currentTime+(d.seekOffset||10));});
-    ms.setActionHandler('seekbackward',d=>{audioEl.currentTime=Math.max(0,audioEl.currentTime-(d.seekOffset||10));});
-  }catch(e){}
-  document.addEventListener('visibilitychange',()=>{
-    if(document.visibilityState==='visible'&&audioCtx&&audioCtx.state==='suspended')audioCtx.resume().catch(()=>{});
-  });
+    msArtwork=[96,128,192,256,384,512].map(sz=>{
+      const c=document.createElement('canvas');c.width=sz;c.height=sz;
+      drawIcon(c.getContext('2d'),sz,true);
+      return{src:c.toDataURL('image/png'),sizes:`${sz}x${sz}`,type:'image/png'};
+    });
+  }catch(e){msArtwork=[];}
+  return msArtwork;
 }
 function updateMS(track){
   if(!('mediaSession' in navigator))return;
-  try{navigator.mediaSession.metadata=new MediaMetadata({title:track.name,artist:'Music Player',artwork:[]});navigator.mediaSession.playbackState=state.isPlaying?'playing':'paused';}catch(e){}
+  try{navigator.mediaSession.metadata=new MediaMetadata({title:track.name,artist:'Music Player',artwork:getMSArtwork()});navigator.mediaSession.playbackState=state.isPlaying?'playing':'paused';}catch(e){}
 }
 
 /* ===== FILES ===== */
@@ -684,8 +709,13 @@ function updDurUI(id){
 /* ===== PLAYBACK ===== */
 let audioCtx=null,analyser=null,srcNode=null,freqData=null;
 function setupAudio(){
-  if(audioCtx){if(audioCtx.state==='suspended')audioCtx.resume().catch(()=>{});return;}
-  try{const Ctx=window.AudioContext||window.webkitAudioContext;audioCtx=new Ctx();srcNode=audioCtx.createMediaElementSource(audioEl);analyser=audioCtx.createAnalyser();analyser.fftSize=128;analyser.smoothingTimeConstant=0.7;freqData=new Uint8Array(analyser.frequencyBinCount);srcNode.connect(analyser);analyser.connect(audioCtx.destination);}catch(e){audioCtx=null;analyser=null;}
+  if(audioCtx){if(audioCtx.state!=='running')audioCtx.resume().catch(()=>{});return;}
+  try{
+    const Ctx=window.AudioContext||window.webkitAudioContext;
+    audioCtx=new Ctx();
+    audioCtx.onstatechange=()=>{if(state.isPlaying&&audioCtx.state!=='running')audioCtx.resume().catch(()=>{});};
+    srcNode=audioCtx.createMediaElementSource(audioEl);analyser=audioCtx.createAnalyser();analyser.fftSize=128;analyser.smoothingTimeConstant=0.7;freqData=new Uint8Array(analyser.frequencyBinCount);srcNode.connect(analyser);analyser.connect(audioCtx.destination);
+  }catch(e){audioCtx=null;analyser=null;}
 }
 function playQueue(ids,start,ctx){state.queueOriginal=ids.slice();state.queue=state.shuffleOn?sfKeep(ids,start):ids.slice();state.currentIndex=state.shuffleOn?0:start;state.queueContext=ctx;playAt(state.currentIndex);}
 function sfKeep(ids,fi){const f=ids[fi],r=ids.filter((_,i)=>i!==fi);shuffle(r);return[f,...r];}
