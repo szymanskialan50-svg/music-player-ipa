@@ -1,0 +1,14 @@
+{
+  "name": "music-player-ios",
+  "version": "1.0.0",
+  "description": "Music Player iOS Wrapper",
+  "main": "index.js",
+  "scripts": {
+    "build": "npx cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor/cli": "^6.0.0",
+    "@capacitor/core": "^6.0.0",
+    "@capacitor/ios": "^6.0.0"
+  }
+}
