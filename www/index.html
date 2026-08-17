@@ -875,39 +875,81 @@ async function handleYT(){
   const ogt=btn.textContent;
   btn.textContent=t('downloading');
   btn.disabled=true;
-  const retryFetch = async (url, opts, retries=10) => {
+  
+  // Zwiększona liczba prób (retries) z 10 na 15 oraz czas oczekiwania z 1.5s na 2s,
+  // co daje serwerowi (np. HF Space) aż 30 sekund na wybudzenie się ze snu (cold boot)
+  const retryFetch = async (url, opts, retries=15) => {
+    let lastErr = null;
     for(let i=0; i<retries; i++){
-      try { const r = await fetch(url, opts); if(r.ok) return r; } catch(e){}
-      await new Promise(r=>setTimeout(r, 1500));
+      try { 
+        const r = await fetch(url, opts); 
+        if(r.ok) return r; 
+        lastErr = new Error("HTTP " + r.status);
+      } catch(e){ lastErr = e; }
+      await new Promise(r=>setTimeout(r, 2000));
     }
-    throw new Error("Failed after retries");
+    throw lastErr || new Error("Failed after retries");
   };
+  
   try {
-      const plRes = await retryFetch(`http://127.0.0.1:8000/playlist/?url=${encodeURIComponent(v)}`, { method: 'POST' });
+      // 1. Zbieranie informacji o filmach z lokalnego API
+      const plRes = await retryFetch(`http://127.0.0.1:8000/playlist/?url=${encodeURIComponent(v)}`, { method: 'POST' }, 5);
       const plData = await plRes.json();
       const isList = plData.videos && plData.videos.length > 1;
       let targetPlId = null;
       if(isList) targetPlId = createPL(plData.title);
+      
       closeSheet('ytModal');
       document.getElementById('ytInput').value='';
       let successCount = 0;
+      
       for (const vid of plData.videos) {
           try {
-              showToast(`Downloading: ${vid.title}...`);
-              const dlRes = await retryFetch(`http://127.0.0.1:8000/download/?url=${encodeURIComponent(vid.url)}`, { method: 'POST' });
+              showToast(t('downloading') + ` ${vid.title.substring(0, 20)}...`);
+              
+              let dlRes;
+              try {
+                  // A. Podstawowe API na HuggingFace - POST (dostosowane na uśpione aplikacje HF)
+                  dlRes = await retryFetch(`https://x3lanix1-yt.hf.space/download/?url=${encodeURIComponent(vid.url)}`, { method: 'POST' }, 12);
+              } catch (err1) {
+                  console.warn("HF Space POST failed, trying GET...", err1);
+                  try {
+                      // B. Fallback nr 1: Spróbuj metody GET (czasami API blokuje POST z powodu braku CORS)
+                      dlRes = await retryFetch(`https://x3lanix1-yt.hf.space/download/?url=${encodeURIComponent(vid.url)}`, { method: 'GET' }, 3);
+                  } catch (err2) {
+                      console.warn("HF Space GET failed, trying local fallback...", err2);
+                      // C. Fallback nr 2: Użyj lokalnego backendu (skoro 127.0.0.1 zwróciło listę, prawdopodobnie ma też endpoint download)
+                      dlRes = await retryFetch(`http://127.0.0.1:8000/download/?url=${encodeURIComponent(vid.url)}`, { method: 'POST' }, 3);
+                  }
+              }
+              
               const blob = await dlRes.blob();
+              
+              // Weryfikacja: jeśli plik to tekst JSON / błąd, to rozmiar zazwyczaj będzie mniejszy niż 1 KB
+              if (blob.size < 1000) {
+                  throw new Error("Pobrany plik jest za mały (prawdopodobnie blokada IP przez serwery Youtube lub odpowiedź błędu)");
+              }
+              
               let title = vid.title;
               const titleHeader = dlRes.headers.get("X-Video-Title");
               if(titleHeader) title = decodeURIComponent(titleHeader);
+              
               const file = new File([blob], title+".mp4", { type: "video/mp4" });
               const ids = handleFiles([file]);
               if (targetPlId && ids.length) addToPL(targetPlId, ids);
               successCount++;
-          } catch(e) { console.error("Failed video:", vid.url); }
+          } catch(e) { 
+              console.error("Failed video:", vid.url, e); 
+          }
       }
+      
       if (successCount > 0) showToast(`Downloaded ${successCount} track(s)`);
-      else showToast("Download failed");
-  } catch(e) { showToast("Error connecting to local API"); }
+      else showToast("Download failed (Server error or blocked)");
+      
+  } catch(e) { 
+      console.error("YT Error:", e);
+      showToast("Error connecting to local API"); 
+  }
   finally { btn.textContent=ogt; btn.disabled=false; }
 }
 
