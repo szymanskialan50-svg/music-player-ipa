@@ -155,7 +155,7 @@ h1,h2,h3,p { margin:0; }
 .ctrl-secondary { position:relative; color:var(--text-secondary); width:40px; height:40px; }
 .ctrl-secondary.active { color:var(--accent); }
 .ctrl-secondary.repeat-one::after { content:'1'; position:absolute; top:-2px; right:-2px; font-size:9px; font-weight:700; background:var(--accent); color:var(--accent-text); width:13px; height:13px; border-radius:50%; display:flex; align-items:center; justify-content:center; }
-.ctrl-main { color:#fff; width:40px; height:40px; }
+.ctrl-main { color:var(--text); width:40px; height:40px; }
 .ctrl-play { width:66px; height:66px; border-radius:50%; background:var(--accent); color:var(--accent-text); }
 /* Overlay / sheets */
 .overlay { position:fixed; inset:0; z-index:30; background:rgba(0,0,0,0.5); opacity:0; transition:opacity 0.3s; -webkit-backdrop-filter:blur(2px); backdrop-filter:blur(2px); }
@@ -183,11 +183,6 @@ h1,h2,h3,p { margin:0; }
 .sheet-empty { color:var(--text-tertiary); text-align:center; padding:30px 10px; font-size:14.5px; }
 .toast { position:fixed; left:50%; bottom:calc(var(--safe-bottom) + 90px); z-index:50; transform:translateX(-50%) translateY(20px); background:rgba(255,255,255,0.95); color:#0a0a0a; padding:12px 20px; border-radius:14px; font-size:14px; font-weight:600; max-width:80vw; text-align:center; opacity:0; transition:opacity 0.3s,transform 0.3s var(--ease-smooth); box-shadow:0 8px 24px rgba(0,0,0,0.35); }
 .toast.visible { opacity:1; transform:translateX(-50%) translateY(0); }
-/* YouTube Progress */
-.yt-progress { display:flex; flex-direction:column; gap:8px; margin-top:12px; }
-.yt-progress-bar { width:100%; height:6px; background:var(--surface); border-radius:3px; overflow:hidden; }
-.yt-progress-fill { height:100%; background:var(--accent); width:0%; transition:width 0.3s; }
-.yt-progress-text { font-size:12px; color:var(--text-secondary); text-align:center; }
 /* Setup screen */
 #setupScreen { position:fixed; inset:0; z-index:100; background:var(--bg); display:flex; flex-direction:column; align-items:center; opacity:1; transition:opacity 0.4s var(--ease-smooth); }
 #setupScreen.hiding { opacity:0; pointer-events:none; }
@@ -373,30 +368,6 @@ h1,h2,h3,p { margin:0; }
 
 <div id="overlay" class="overlay hidden"></div>
 
-<div id="addMenuSheet" class="sheet hidden">
-  <div class="sheet-handle"></div>
-  <h3 class="sheet-title" data-i18n="add_music">Add Music</h3>
-  <div class="sheet-options">
-    <button id="optAddDevice" class="sheet-option" data-i18n="from_device">From Device</button>
-    <button id="optAddYouTube" class="sheet-option" data-i18n="from_yt">From YouTube / Spotify</button>
-  </div>
-  <button class="secondary-btn full" onclick="closeSheet('addMenuSheet')" data-i18n="btn_cancel">Cancel</button>
-</div>
-
-<div id="ytModal" class="sheet hidden">
-  <div class="sheet-handle"></div>
-  <h3 class="sheet-title">YouTube / Spotify</h3>
-  <input type="text" id="ytInput" class="text-input" placeholder="https://www.youtube.com/watch?v=... or https://open.spotify.com/track/..." autocomplete="off">
-  <div id="ytProgressContainer" class="yt-progress hidden">
-    <div class="yt-progress-bar"><div id="ytProgressFill" class="yt-progress-fill"></div></div>
-    <div class="yt-progress-text" id="ytProgressText">Downloading...</div>
-  </div>
-  <div class="sheet-actions">
-    <button class="secondary-btn" onclick="closeSheet('ytModal')">Cancel</button>
-    <button id="ytSubmitBtn" class="primary-btn">Add</button>
-  </div>
-</div>
-
 <div id="newPlaylistModal" class="sheet hidden">
   <div class="sheet-handle"></div>
   <h3 class="sheet-title" data-i18n="new_playlist">New Playlist</h3>
@@ -496,6 +467,7 @@ function applyTheme(th){
   document.getElementById('metaThemeColor').setAttribute('content',dark?'#050505':'#F2F2F7');
   const v=document.getElementById('themeCurrentVal');
   if(v)v.textContent=t('theme_'+th);
+  redrawLogo();
 }
 window.matchMedia('(prefers-color-scheme:dark)').addEventListener('change',()=>{if(theme==='system')applyTheme('system');});
 function syncThemeUI(){
@@ -512,7 +484,6 @@ function applyLanguage(code){
   lang=code; localStorage.setItem('mp_lang',code);
   document.documentElement.lang=code;
   document.querySelectorAll('[data-i18n]').forEach(el=>el.textContent=t(el.dataset.i18n));
-  const yi=document.getElementById('ytInput'); if(yi)yi.placeholder=t('yt_placeholder');
   const pi=document.getElementById('newPlaylistInput'); if(pi)pi.placeholder=t('new_playlist');
   const lv=document.getElementById('langCurrentVal');
   const lo=LANGS.find(l=>l.code===code);
@@ -800,72 +771,6 @@ function showActionSheet(title,opts){
 }
 function showToast(msg){const el=document.getElementById('toast');el.textContent=msg;el.classList.remove('hidden');requestAnimationFrame(()=>el.classList.add('visible'));setTimeout(()=>{el.classList.remove('visible');setTimeout(()=>el.classList.add('hidden'),300);},2200);}
 
-/* ===== YOUTUBE / SPOTIFY DOWNLOAD ===== */
-async function handleYT(){
-  const v=document.getElementById('ytInput').value.trim();
-  if(!v)return;
-  
-  const btn=document.getElementById('ytSubmitBtn');
-  const progressContainer=document.getElementById('ytProgressContainer');
-  const progressFill=document.getElementById('ytProgressFill');
-  const progressText=document.getElementById('ytProgressText');
-  
-  const ogt=btn.textContent;
-  btn.textContent='Downloading...';
-  btn.disabled=true;
-  progressContainer.classList.remove('hidden');
-  progressFill.style.width='0%';
-  
-  try {
-    progressFill.style.width='30%';
-    progressText.textContent='Getting video info...';
-    
-    const response = await fetch(
-      `https://x3lanix1-yt.hf.space/download/?url=${encodeURIComponent(v)}`,
-      { method: 'POST' }
-    );
-    
-    if(!response.ok) throw new Error('Download failed');
-    
-    progressFill.style.width='70%';
-    progressText.textContent='Processing...';
-    
-    const blob = await response.blob();
-    
-    if(blob.size < 1000){
-      throw new Error('File too small - blocked by platform');
-    }
-    
-    // Get filename from header or generate one
-    let title = 'audio';
-    const titleHeader = response.headers.get('X-Video-Title');
-    if(titleHeader) title = decodeURIComponent(titleHeader);
-    
-    progressFill.style.width='90%';
-    
-    const file = new File([blob], title+".mp3", { type: "audio/mpeg" });
-    handleFiles([file]);
-    
-    progressFill.style.width='100%';
-    progressText.textContent='Done!';
-    showToast('✅ Track added');
-    
-    closeSheet('ytModal');
-    document.getElementById('ytInput').value='';
-    
-  } catch(e) {
-    console.error('Error:', e);
-    showToast('❌ '+e.message);
-    progressFill.style.width='0%';
-  }
-  finally {
-    btn.textContent=ogt;
-    btn.disabled=false;
-    setTimeout(() => {
-      progressContainer.classList.add('hidden');
-    }, 2000);
-  }
-}
 
 /* ===== RENDER ===== */
 function trackHTML(tr,opts={}){
@@ -878,7 +783,7 @@ function trackHTML(tr,opts={}){
 function attachRows(el,list,ctx){el.onclick=e=>{const mb=e.target.closest('.track-menu-btn');if(mb){e.stopPropagation();openTM(mb.dataset.trackId,ctx);return;}const row=e.target.closest('.track-row');if(row){const ids=list.map(x=>x.id);playQueue(ids,ids.indexOf(row.dataset.trackId),ctx);}};}
 function renderLibrary(){
   const el=document.getElementById('libraryList');
-  if(!state.tracks.length){el.innerHTML=emptyHTML(t('empty_lib_title'),t('empty_lib_sub'),t('add_music'),'addMusicEmptyBtn');const b=document.getElementById('addMusicEmptyBtn');if(b)b.addEventListener('click',()=>openSheet('addMenuSheet'));return;}
+  if(!state.tracks.length){el.innerHTML=emptyHTML(t('empty_lib_title'),t('empty_lib_sub'),t('add_music'),'addMusicEmptyBtn');const b=document.getElementById('addMusicEmptyBtn');if(b)b.addEventListener('click',()=>fileInputEl.click());return;}
   el.innerHTML=state.tracks.map((tr,i)=>trackHTML(tr,{index:i})).join('');
   attachRows(el,state.tracks,{type:'library'});
 }
@@ -957,10 +862,7 @@ audioEl.addEventListener('timeupdate',onTime);
 audioEl.addEventListener('loadedmetadata',onTime);
 npSeekEl.addEventListener('input',()=>{seeking=true;const p=npSeekEl.value;npSeekEl.style.setProperty('--fill',p+'%');npCurrentEl.textContent=fmt((p/100)*(audioEl.duration||0));});
 npSeekEl.addEventListener('change',()=>{audioEl.currentTime=(npSeekEl.value/100)*(audioEl.duration||0);seeking=false;});
-document.getElementById('mainAddBtn').addEventListener('click',()=>openSheet('addMenuSheet'));
-document.getElementById('optAddDevice').addEventListener('click',()=>{closeSheet('addMenuSheet');fileInputEl.click();});
-document.getElementById('optAddYouTube').addEventListener('click',()=>{closeSheet('addMenuSheet');setTimeout(()=>openSheet('ytModal'),320);});
-document.getElementById('ytSubmitBtn').addEventListener('click',handleYT);
+document.getElementById('mainAddBtn').addEventListener('click',()=>fileInputEl.click());
 
 fileInputEl.addEventListener('change',e=>{handleFiles(e.target.files);fileInputEl.value='';});
 document.getElementById('newPlaylistBtn').addEventListener('click',openNPModal);
@@ -1004,13 +906,9 @@ function bootApp(){
   switchView('library');
 }
 
-window.onload=()=>{
-  if(!lsGet(SETUP_KEY)) initSetup();
-  else { document.getElementById('setupScreen').style.display='none'; bootApp(); }
-};
-
 /* ===== ICON - FIXED FOR iOS ===== */
-function drawIcon(ctx,size,bg){
+function drawIcon(ctx,size,bg,color){
+  color = color || '#F5F5F7';
   ctx.clearRect(0,0,size,size);
   if(bg){
     // Fill with solid background to prevent transparency issues on iOS
@@ -1028,8 +926,15 @@ function drawIcon(ctx,size,bg){
     ctx.fill();
   }
   const cx=size*.5,cy=size*.505,rr=size*.30;
-  ctx.beginPath();ctx.arc(cx,cy,rr,0,Math.PI*2);ctx.strokeStyle='#F5F5F7';ctx.lineWidth=size*.042;ctx.stroke();
-  const tv=size*.155;ctx.beginPath();ctx.moveTo(cx-tv*.55,cy-tv);ctx.lineTo(cx+tv*.95,cy);ctx.lineTo(cx-tv*.55,cy+tv);ctx.closePath();ctx.fillStyle='#F5F5F7';ctx.fill();
+  ctx.beginPath();ctx.arc(cx,cy,rr,0,Math.PI*2);ctx.strokeStyle=color;ctx.lineWidth=size*.042;ctx.stroke();
+  const tv=size*.155;ctx.beginPath();ctx.moveTo(cx-tv*.55,cy-tv);ctx.lineTo(cx+tv*.95,cy);ctx.lineTo(cx-tv*.55,cy+tv);ctx.closePath();ctx.fillStyle=color;ctx.fill();
+}
+function currentTextColor(){
+  return (getComputedStyle(document.documentElement).getPropertyValue('--text')||'').trim()||'#F5F5F7';
+}
+function redrawLogo(){
+  const c=document.getElementById('logoCanvas');
+  if(c)drawIconCrisp(c,28,false,currentTextColor());
 }
 
 /* ===== ENTRY ===== */
@@ -1044,7 +949,7 @@ const ic=document.createElement('canvas');ic.width=180;ic.height=180;drawIcon(ic
 const du=ic.toDataURL('image/png');
 ['apple-touch-icon','icon'].forEach(r=>{const l=document.createElement('link');l.rel=r;l.href=du;document.head.appendChild(l);});
 
-function drawIconCrisp(canvas,cssSize,bg){
+function drawIconCrisp(canvas,cssSize,bg,color){
   const dpr=window.devicePixelRatio||1;
   canvas.width=Math.round(cssSize*dpr);
   canvas.height=Math.round(cssSize*dpr);
@@ -1052,10 +957,9 @@ function drawIconCrisp(canvas,cssSize,bg){
   canvas.style.height=cssSize+'px';
   const ctx=canvas.getContext('2d');
   ctx.setTransform(dpr,0,0,dpr,0,0);
-  drawIcon(ctx,cssSize,bg);
+  drawIcon(ctx,cssSize,bg,color);
 }
 
-drawIconCrisp(document.getElementById('logoCanvas'),28,false);
 if(!localStorage.getItem(SETUP_KEY)){drawIconCrisp(document.getElementById('setupCanvas'),78,true);}
 </script>
 </body>
