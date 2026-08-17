@@ -642,49 +642,24 @@ function savePl(){lsSet('mp_playlists',JSON.stringify(state.playlists));}
 
 /* ===== iOS BACKGROUND AUDIO ===== */
 function initBgAudio(){
-  if('mediaSession' in navigator){
-    try{
-      const ms=navigator.mediaSession;
-      ms.setActionHandler('play',()=>{setupAudio();audioEl.play().catch(()=>{});});
-      ms.setActionHandler('pause',()=>audioEl.pause());
-      ms.setActionHandler('previoustrack',prevT);
-      ms.setActionHandler('nexttrack',nextT);
-      ms.setActionHandler('stop',()=>{audioEl.pause();audioEl.currentTime=0;});
-      ms.setActionHandler('seekto',d=>{if(d.seekTime!=null)audioEl.currentTime=d.seekTime;});
-      ms.setActionHandler('seekforward',d=>{audioEl.currentTime=Math.min(audioEl.duration||0,audioEl.currentTime+(d.seekOffset||10));});
-      ms.setActionHandler('seekbackward',d=>{audioEl.currentTime=Math.max(0,audioEl.currentTime-(d.seekOffset||10));});
-    }catch(e){}
-  }
-  // iOS/WKWebView regularly suspends the Web Audio graph (used here for the equalizer)
-  // as soon as the app is backgrounded or the screen locks. Since the <audio> element's
-  // sound is routed *through* that graph, a suspended context = silent audio even though
-  // playback "continues". We keep nudging it (and the <audio> element) back to life instead
-  // of only reacting once the user returns to the app.
-  const nudge=()=>{
-    if(!state.isPlaying)return;
-    if(audioCtx&&audioCtx.state!=='running')audioCtx.resume().catch(()=>{});
-    if(audioEl.paused&&audioEl.src)audioEl.play().catch(()=>{});
-  };
-  setInterval(nudge,1000);
-  document.addEventListener('visibilitychange',nudge);
-  window.addEventListener('pageshow',nudge);
-  window.addEventListener('focus',nudge);
-}
-let msArtwork=null;
-function getMSArtwork(){
-  if(msArtwork)return msArtwork;
+  if(!('mediaSession' in navigator))return;
   try{
-    msArtwork=[96,128,192,256,384,512].map(sz=>{
-      const c=document.createElement('canvas');c.width=sz;c.height=sz;
-      drawIcon(c.getContext('2d'),sz,true);
-      return{src:c.toDataURL('image/png'),sizes:`${sz}x${sz}`,type:'image/png'};
-    });
-  }catch(e){msArtwork=[];}
-  return msArtwork;
+    const ms=navigator.mediaSession;
+    ms.setActionHandler('play',togglePP);
+    ms.setActionHandler('pause',togglePP);
+    ms.setActionHandler('previoustrack',prevT);
+    ms.setActionHandler('nexttrack',nextT);
+    ms.setActionHandler('seekto',d=>{if(d.seekTime!=null)audioEl.currentTime=d.seekTime;});
+    ms.setActionHandler('seekforward',d=>{audioEl.currentTime=Math.min(audioEl.duration||0,audioEl.currentTime+(d.seekOffset||10));});
+    ms.setActionHandler('seekbackward',d=>{audioEl.currentTime=Math.max(0,audioEl.currentTime-(d.seekOffset||10));});
+  }catch(e){}
+  document.addEventListener('visibilitychange',()=>{
+    if(document.visibilityState==='visible'&&audioCtx&&audioCtx.state==='suspended')audioCtx.resume().catch(()=>{});
+  });
 }
 function updateMS(track){
   if(!('mediaSession' in navigator))return;
-  try{navigator.mediaSession.metadata=new MediaMetadata({title:track.name,artist:'Music Player',artwork:getMSArtwork()});navigator.mediaSession.playbackState=state.isPlaying?'playing':'paused';}catch(e){}
+  try{navigator.mediaSession.metadata=new MediaMetadata({title:track.name,artist:'Music Player',artwork:[]});navigator.mediaSession.playbackState=state.isPlaying?'playing':'paused';}catch(e){}
 }
 
 /* ===== FILES ===== */
@@ -709,13 +684,8 @@ function updDurUI(id){
 /* ===== PLAYBACK ===== */
 let audioCtx=null,analyser=null,srcNode=null,freqData=null;
 function setupAudio(){
-  if(audioCtx){if(audioCtx.state!=='running')audioCtx.resume().catch(()=>{});return;}
-  try{
-    const Ctx=window.AudioContext||window.webkitAudioContext;
-    audioCtx=new Ctx();
-    audioCtx.onstatechange=()=>{if(state.isPlaying&&audioCtx.state!=='running')audioCtx.resume().catch(()=>{});};
-    srcNode=audioCtx.createMediaElementSource(audioEl);analyser=audioCtx.createAnalyser();analyser.fftSize=128;analyser.smoothingTimeConstant=0.7;freqData=new Uint8Array(analyser.frequencyBinCount);srcNode.connect(analyser);analyser.connect(audioCtx.destination);
-  }catch(e){audioCtx=null;analyser=null;}
+  if(audioCtx){if(audioCtx.state==='suspended')audioCtx.resume().catch(()=>{});return;}
+  try{const Ctx=window.AudioContext||window.webkitAudioContext;audioCtx=new Ctx();srcNode=audioCtx.createMediaElementSource(audioEl);analyser=audioCtx.createAnalyser();analyser.fftSize=128;analyser.smoothingTimeConstant=0.7;freqData=new Uint8Array(analyser.frequencyBinCount);srcNode.connect(analyser);analyser.connect(audioCtx.destination);}catch(e){audioCtx=null;analyser=null;}
 }
 function playQueue(ids,start,ctx){state.queueOriginal=ids.slice();state.queue=state.shuffleOn?sfKeep(ids,start):ids.slice();state.currentIndex=state.shuffleOn?0:start;state.queueContext=ctx;playAt(state.currentIndex);}
 function sfKeep(ids,fi){const f=ids[fi],r=ids.filter((_,i)=>i!==fi);shuffle(r);return[f,...r];}
@@ -875,81 +845,39 @@ async function handleYT(){
   const ogt=btn.textContent;
   btn.textContent=t('downloading');
   btn.disabled=true;
-  
-  // Zwiększona liczba prób (retries) z 10 na 15 oraz czas oczekiwania z 1.5s na 2s,
-  // co daje serwerowi (np. HF Space) aż 30 sekund na wybudzenie się ze snu (cold boot)
-  const retryFetch = async (url, opts, retries=15) => {
-    let lastErr = null;
+  const retryFetch = async (url, opts, retries=10) => {
     for(let i=0; i<retries; i++){
-      try { 
-        const r = await fetch(url, opts); 
-        if(r.ok) return r; 
-        lastErr = new Error("HTTP " + r.status);
-      } catch(e){ lastErr = e; }
-      await new Promise(r=>setTimeout(r, 2000));
+      try { const r = await fetch(url, opts); if(r.ok) return r; } catch(e){}
+      await new Promise(r=>setTimeout(r, 1500));
     }
-    throw lastErr || new Error("Failed after retries");
+    throw new Error("Failed after retries");
   };
-  
   try {
-      // 1. Zbieranie informacji o filmach z lokalnego API
-      const plRes = await retryFetch(`http://127.0.0.1:8000/playlist/?url=${encodeURIComponent(v)}`, { method: 'POST' }, 5);
+      const plRes = await retryFetch(`http://127.0.0.1:8000/playlist/?url=${encodeURIComponent(v)}`, { method: 'POST' });
       const plData = await plRes.json();
       const isList = plData.videos && plData.videos.length > 1;
       let targetPlId = null;
       if(isList) targetPlId = createPL(plData.title);
-      
       closeSheet('ytModal');
       document.getElementById('ytInput').value='';
       let successCount = 0;
-      
       for (const vid of plData.videos) {
           try {
-              showToast(t('downloading') + ` ${vid.title.substring(0, 20)}...`);
-              
-              let dlRes;
-              try {
-                  // A. Podstawowe API na HuggingFace - POST (dostosowane na uśpione aplikacje HF)
-                  dlRes = await retryFetch(`https://x3lanix1-yt.hf.space/download/?url=${encodeURIComponent(vid.url)}`, { method: 'POST' }, 12);
-              } catch (err1) {
-                  console.warn("HF Space POST failed, trying GET...", err1);
-                  try {
-                      // B. Fallback nr 1: Spróbuj metody GET (czasami API blokuje POST z powodu braku CORS)
-                      dlRes = await retryFetch(`https://x3lanix1-yt.hf.space/download/?url=${encodeURIComponent(vid.url)}`, { method: 'GET' }, 3);
-                  } catch (err2) {
-                      console.warn("HF Space GET failed, trying local fallback...", err2);
-                      // C. Fallback nr 2: Użyj lokalnego backendu (skoro 127.0.0.1 zwróciło listę, prawdopodobnie ma też endpoint download)
-                      dlRes = await retryFetch(`http://127.0.0.1:8000/download/?url=${encodeURIComponent(vid.url)}`, { method: 'POST' }, 3);
-                  }
-              }
-              
+              showToast(`Downloading: ${vid.title}...`);
+              const dlRes = await retryFetch(`https://x3lanix1-yt.hf.space/download/?url=${encodeURIComponent(vid.url)}`, { method: 'POST' });
               const blob = await dlRes.blob();
-              
-              // Weryfikacja: jeśli plik to tekst JSON / błąd, to rozmiar zazwyczaj będzie mniejszy niż 1 KB
-              if (blob.size < 1000) {
-                  throw new Error("Pobrany plik jest za mały (prawdopodobnie blokada IP przez serwery Youtube lub odpowiedź błędu)");
-              }
-              
               let title = vid.title;
               const titleHeader = dlRes.headers.get("X-Video-Title");
               if(titleHeader) title = decodeURIComponent(titleHeader);
-              
               const file = new File([blob], title+".mp4", { type: "video/mp4" });
               const ids = handleFiles([file]);
               if (targetPlId && ids.length) addToPL(targetPlId, ids);
               successCount++;
-          } catch(e) { 
-              console.error("Failed video:", vid.url, e); 
-          }
+          } catch(e) { console.error("Failed video:", vid.url); }
       }
-      
       if (successCount > 0) showToast(`Downloaded ${successCount} track(s)`);
-      else showToast("Download failed (Server error or blocked)");
-      
-  } catch(e) { 
-      console.error("YT Error:", e);
-      showToast("Error connecting to local API"); 
-  }
+      else showToast("Download failed");
+  } catch(e) { showToast("Error connecting to local API"); }
   finally { btn.textContent=ogt; btn.disabled=false; }
 }
 
@@ -1045,23 +973,8 @@ if(localStorage.getItem(SETUP_KEY)){
 const ic=document.createElement('canvas');ic.width=180;ic.height=180;drawIcon(ic.getContext('2d'),180,true);
 const du=ic.toDataURL('image/png');
 ['apple-touch-icon','icon'].forEach(r=>{const l=document.createElement('link');l.rel=r;l.href=du;document.head.appendChild(l);});
-// Fix: canvases were double-scaled for Retina (fixed backing-store size PLUS a runtime
-// devicePixelRatio scale on top), so only a small clipped corner of the icon was visible
-// on real iPhones (2x/3x screens). We now size the backing store to match the actual
-// CSS display size * devicePixelRatio, then draw using the CSS size as the coordinate space.
-function drawIconCrisp(canvas,cssSize,bg){
-  const dpr=window.devicePixelRatio||1;
-  canvas.width=Math.round(cssSize*dpr);
-  canvas.height=Math.round(cssSize*dpr);
-  canvas.style.width=cssSize+'px';
-  canvas.style.height=cssSize+'px';
-  const ctx=canvas.getContext('2d');
-  ctx.setTransform(dpr,0,0,dpr,0,0);
-  drawIcon(ctx,cssSize,bg);
-}
-drawIconCrisp(document.getElementById('logoCanvas'),28,false);
-if(!localStorage.getItem(SETUP_KEY)){drawIconCrisp(document.getElementById('setupCanvas'),78,true);}
-
+const hc=document.getElementById('logoCanvas').getContext('2d');hc.scale(window.devicePixelRatio||1,window.devicePixelRatio||1);drawIcon(hc,28,false);
+if(!localStorage.getItem(SETUP_KEY)){const sc=document.getElementById('setupCanvas').getContext('2d');sc.scale(window.devicePixelRatio||1,window.devicePixelRatio||1);drawIcon(sc,160,true);}
 </script>
 </body>
 </html>
